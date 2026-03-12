@@ -16,6 +16,8 @@ export default function App() {
     const [tokenCount, setTokenCount] = useState(0)
     const [resumedFromToken, setResumedFromToken] = useState<number | null>(null)
     const [segments, setSegments] = useState<string[]>([])
+    const [useMock, setUseMock] = useState(true)
+    const [tokensPerSecond, setTokensPerSecond] = useState(8)
 
     const sessionIdRef = useRef<string>('')
     const lastEventIdRef = useRef<number>(-1)
@@ -43,7 +45,6 @@ export default function App() {
             buffer = xhr.responseText
 
             const lines = newData.split('\n')
-
             let currentId: number | null = null
 
             for (const line of lines) {
@@ -72,9 +73,11 @@ export default function App() {
 
         xhr.send(JSON.stringify({
             message: prompt,
-            sessionId
+            sessionId,
+            useMock,
+            tokensPerSecond
         }))
-    }, [prompt, appendToken])
+    }, [prompt, appendToken, useMock, tokensPerSecond])
 
     const handleSend = useCallback(() => {
         if (!prompt.trim()) return
@@ -86,6 +89,7 @@ export default function App() {
         setResponse('')
         setTokenCount(0)
         setResumedFromToken(null)
+        setSegments([])
 
         startStream(sessionId)
     }, [prompt, startStream])
@@ -158,6 +162,33 @@ export default function App() {
             </p>
 
             <StatusBadge status={status} resumedFromToken={resumedFromToken} />
+
+            <div style={styles.mockControls}>
+                <label style={styles.mockLabel}>
+                    <input
+                        type="checkbox"
+                        checked={useMock}
+                        onChange={e => setUseMock(e.target.checked)}
+                        disabled={status === 'streaming' || status === 'resuming'}
+                    />
+                    Use mock producer
+                </label>
+
+                {useMock && (
+                    <label style={styles.mockLabel}>
+                        Speed: {tokensPerSecond} tokens/sec
+                        <input
+                            type="range"
+                            min={1}
+                            max={20}
+                            value={tokensPerSecond}
+                            onChange={e => setTokensPerSecond(parseInt(e.target.value))}
+                            disabled={status === 'streaming' || status === 'resuming'}
+                            style={{ width: 120 }}
+                        />
+                    </label>
+                )}
+            </div>
 
             <div style={styles.inputRow}>
                 <input
@@ -381,5 +412,22 @@ const styles: Record<string, React.CSSProperties> = {
         lineHeight: 1.7,
         color: '#999',
         whiteSpace: 'pre-wrap' as const,
+    },
+    mockControls: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 24,
+        padding: '12px 16px',
+        background: '#1a1a1a',
+        borderRadius: 8,
+        border: '1px solid #2a2a2a',
+    },
+    mockLabel: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        fontSize: 13,
+        color: '#aaa',
+        cursor: 'pointer',
     },
 }

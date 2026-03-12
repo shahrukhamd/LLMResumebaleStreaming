@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import Redis from 'ioredis'
+import { mockTokenStream } from '../mock/producer'
 
 const router = Router()
 
@@ -10,15 +11,13 @@ const redis = new Redis({
 })
 
 router.post('/stream', async (req: Request, res: Response) => {
-    const { message, sessionId } = req.body
+    const { message, sessionId, useMock = false, tokensPerSecond } = req.body
 
     if (!message || !sessionId) {
         res.status(400).json({ error: 'message and sessionId are required' })
         return
     }
 
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '')
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
     const bufferKey = `stream:${sessionId}`
 
     res.setHeader('Content-Type', 'text/event-stream')
@@ -28,20 +27,29 @@ router.post('/stream', async (req: Request, res: Response) => {
     res.flushHeaders()
 
     try {
-        const result = await model.generateContentStream(message)
+        let tokenStream: AsyncGenerator<string>
+
+        if (useMock) {
+            tokenStream = mockTokenStream({ tokensPerSecond })
+        } else {
+            const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '')
+            const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
+            const result = await model.generateContentStream(message)
+
+            tokenStream = (async function* () {
+                for await (const chunk of result.stream) {
+                    const text = chunk.text()
+                    if (text) yield text
+                }
+            })()
+        }
 
         let sequenceNumber = 0
 
-        for await (const chunk of result.stream) {
-            const token = chunk.text()
-
-            if (!token) continue
-
+        for await (const token of tokenStream) {
             await redis.rpush(bufferKey, token)
             await redis.expire(bufferKey, 3600)
-
             res.write(`id: ${sequenceNumber}\ndata: ${token}\n\n`)
-
             sequenceNumber++
         }
 
@@ -65,7 +73,6 @@ router.get('/stream/replay', async (req: Request, res: Response) => {
 
     const bufferKey = `stream:${sessionId}`
     const fromIndex = parseInt(lastEventId as string) + 1
-
     const missedTokens = await redis.lrange(bufferKey, fromIndex, -1)
 
     res.setHeader('Content-Type', 'text/event-stream')
