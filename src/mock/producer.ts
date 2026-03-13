@@ -31,7 +31,7 @@ The result is a seamless experience where users never notice a disconnection
 happened at all. From their perspective, the stream simply continued. Behind 
 the scenes, the infrastructure detected the gap, fetched the missed tokens 
 from Redis, and replayed them before continuing with live generation.
-`.trim()
+`
 
 function tokenize(text: string): string[] {
     const tokens: string[] = []

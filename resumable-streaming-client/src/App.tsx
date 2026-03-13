@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import {useState, useRef, useCallback, useEffect} from 'react'
 import { v4 as uuidv4 } from 'uuid'
 
 type StreamStatus =
@@ -43,27 +43,10 @@ export default function App() {
         xhr.onprogress = () => {
             const newData = xhr.responseText.slice(buffer.length)
             buffer = xhr.responseText
-
-            const lines = newData.split('\n')
-            let currentId: number | null = null
-
-            for (const line of lines) {
-                if (line.startsWith('id: ')) {
-                    currentId = parseInt(line.slice(4))
-                } else if (line.startsWith('data: ')) {
-                    const data = line.slice(6)
-
-                    if (data === 'stream complete') {
-                        setStatus('complete')
-                        return
-                    }
-
-                    if (currentId !== null) {
-                        lastEventIdRef.current = currentId
-                    }
-
-                    appendToken(data)
-                }
+            for (const { id, data } of parseSSEChunk(newData)) {
+                if (data === 'stream complete') { setStatus('complete'); return }
+                if (id !== null) lastEventIdRef.current = id
+                appendToken(data)
             }
         }
 
@@ -105,7 +88,7 @@ export default function App() {
         setStatus('disconnected')
 
         setTimeout(() => {
-            handleResume()
+            handleResumeRef.current()
         }, 2000)
     }, [response])
 
@@ -123,25 +106,23 @@ export default function App() {
         )
             .then(res => res.text())
             .then(text => {
-                const lines = text.split('\n')
-
-                for (const line of lines) {
-                    if (line.startsWith('data: ') ) {
-                        const data = line.slice(6)
-                        if (data === 'replay complete' || data === 'stream complete') {
-                            setStatus('complete')
-                            return
-                        }
-                        appendToken(data)
+                for (const { id, data } of parseSSEChunk(text)) {
+                    if (data === 'replay complete' || data === 'stream complete') {
+                        setStatus('complete')
+                        return
                     }
+                    if (id !== null) lastEventIdRef.current = id
+                    appendToken(data)
                 }
-
                 setStatus('complete')
             })
             .catch(() => {
                 setStatus('error')
             })
     }, [appendToken])
+
+    const handleResumeRef = useRef(handleResume)
+    useEffect(() => { handleResumeRef.current = handleResume }, [handleResume])
 
     const handleReset = useCallback(() => {
         setPrompt('')
@@ -275,6 +256,31 @@ function StatusBadge({
             {label}
         </div>
     )
+}
+
+function parseSSEChunk(text: string): { id: number | null; data: string }[] {
+    const events: { id: number | null; data: string }[] = []
+    // Split on double-newline = SSE event boundary
+    const rawEvents = text.split('\n\n').filter(Boolean)
+
+    for (const rawEvent of rawEvents) {
+        let id: number | null = null
+        const dataLines: string[] = []
+
+        for (const line of rawEvent.split('\n')) {
+            if (line.startsWith('id: ')) {
+                id = parseInt(line.slice(4))
+            } else if (line.startsWith('data: ')) {
+                dataLines.push(line.slice(6))
+            }
+        }
+
+        if (dataLines.length > 0) {
+            // Re-join multi-line data with the newline the server split on
+            events.push({ id, data: dataLines.join('\n') })
+        }
+    }
+    return events
 }
 
 const styles: Record<string, React.CSSProperties> = {

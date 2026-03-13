@@ -49,9 +49,11 @@ router.post('/stream', async (req: Request, res: Response) => {
         for await (const token of tokenStream) {
             await redis.rpush(bufferKey, token)
             await redis.expire(bufferKey, 3600)
-            res.write(`id: ${sequenceNumber}\ndata: ${token}\n\n`)
+            res.write(toSSEMessage(sequenceNumber, token))
             sequenceNumber++
         }
+        // Signal that the stream is fully written
+        await redis.set(`${bufferKey}:done`, '1', 'EX', 3600)
 
         res.write('event: done\ndata: stream complete\n\n')
         res.end()
@@ -71,9 +73,13 @@ router.get('/stream/replay', async (req: Request, res: Response) => {
         return
     }
 
-    const bufferKey = `stream:${sessionId}`
     const fromIndex = parseInt(lastEventId as string) + 1
-    const missedTokens = await redis.lrange(bufferKey, fromIndex, -1)
+    if (isNaN(fromIndex)) {
+        res.status(400).json({ error: 'lastEventId must be a number' })
+        return
+    }
+
+    const bufferKey = `stream:${sessionId}`
 
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
@@ -81,15 +87,46 @@ router.get('/stream/replay', async (req: Request, res: Response) => {
     res.setHeader('Access-Control-Allow-Origin', 'http://localhost:5173')
     res.flushHeaders()
 
-    let sequenceNumber = fromIndex
+    let currentIndex = fromIndex
 
-    for (const token of missedTokens) {
-        res.write(`id: ${sequenceNumber}\ndata: ${token}\n\n`)
-        sequenceNumber++
+    const poll = async () => {
+        while (true) {
+            // Read whatever tokens are available from currentIndex onwards
+            const newTokens = await redis.lrange(bufferKey, currentIndex, -1)
+
+            for (const token of newTokens) {
+                res.write(toSSEMessage(currentIndex, token))
+                currentIndex++
+            }
+
+            // Check if the original stream has finished writing
+            const isDone = await redis.get(`${bufferKey}:done`)
+            if (isDone) {
+                res.write('event: done\ndata: replay complete\n\n')
+                res.end()
+                return
+            }
+
+            // Stream still in progress, wait before polling again
+            await new Promise(resolve => setTimeout(resolve, 100))
+        }
     }
 
-    res.write('event: done\ndata: replay complete\n\n')
-    res.end()
+    try {
+        await poll()
+    } catch (error) {
+        console.error('Replay error:', error)
+        res.write('event: error\ndata: something went wrong\n\n')
+        res.end()
+    }
 })
+
+function toSSEMessage(id: number, token: string): string {
+    const dataLines = token
+        .split('\n')
+        .map(line => `data: ${line}`)
+        .join('\n')
+    return `id: ${id}\n${dataLines}\n\n`
+}
 
 export { router as streamRoute }
