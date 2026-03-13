@@ -101,24 +101,31 @@ export default function App() {
 
         setResumedFromToken(resumeFrom)
 
-        fetch(
-            `http://localhost:3001/api/stream/replay?sessionId=${sessionId}&lastEventId=${lastId}`
-        )
-            .then(res => res.text())
-            .then(text => {
-                for (const { id, data } of parseSSEChunk(text)) {
-                    if (data === 'replay complete' || data === 'stream complete') {
-                        setStatus('complete')
-                        return
-                    }
-                    if (id !== null) lastEventIdRef.current = id
-                    appendToken(data)
+        const xhr = new XMLHttpRequest()
+        xhrRef.current = xhr
+
+        xhr.open('GET', `http://localhost:3001/api/stream/replay?sessionId=${sessionId}&lastEventId=${lastId}`)
+        xhr.setRequestHeader('Accept', 'text/event-stream')
+
+        let buffer = ''
+
+        xhr.onprogress = () => {
+            const newData = xhr.responseText.slice(buffer.length)
+            buffer = xhr.responseText
+
+            for (const { id, data } of parseSSEChunk(newData)) {
+                if (data === 'replay complete' || data === 'stream complete') {
+                    setStatus('complete')
+                    return
                 }
-                setStatus('complete')
-            })
-            .catch(() => {
-                setStatus('error')
-            })
+                if (id !== null) lastEventIdRef.current = id
+                appendToken(data)
+            }
+        }
+
+        xhr.onerror = () => setStatus('error')
+
+        xhr.send()
     }, [appendToken])
 
     const handleResumeRef = useRef(handleResume)
@@ -190,7 +197,7 @@ export default function App() {
             </div>
 
             <div style={styles.controls}>
-                {status === 'streaming' && (
+                {(status === 'streaming' || status === 'resuming') && (
                     <button style={styles.disconnectButton} onClick={handleDisconnect}>
                         Simulate Disconnect
                     </button>
